@@ -841,30 +841,12 @@ Return ONLY the reply text, nothing else. No quotes, no "Here is your reply:", j
   /*
    * FULLY AUTOMATIC — zero user clicks required.
    *
-   * TWO-PHASE approach per category:
-   *
-   * PHASE A — CREATE the Gmail label (if it doesn't exist yet):
-   *   Navigate to Gmail Settings → Labels → "Create new label" form.
-   *   This is 100 % reliable: no picker dialogs, no DOM guessing.
-   *   We open the Settings page in a hidden iframe, wait for it to load,
-   *   find the "Create new label" button, fill the text input with .value =
-   *   (regular HTML input, not React — direct assignment works), and click OK.
-   *
-   * PHASE B — APPLY the label to selected email rows:
-   *   Select rows → click toolbar "Label" button → type label name in picker
-   *   → click the matching entry (now exists) → close picker → deselect rows.
-   *
-   * Pre-flight: before every attempt we close any stuck dialogs/pickers so
-   * previous failures can never cascade into a stack of open dialogs.
-   *
-   * fillReactInput() — uses the native HTMLInputElement value setter trick
-   *   to update React-controlled inputs; this is the ONE method that works
-   *   because it bypasses React's property override while still triggering
-   *   the real browser 'input' event that React's synthetic system listens to.
+   * We only use Gmail's label picker flow:
+   *   Select rows → open picker → search label name.
+   *   If label exists, click it.
+   *   If missing, trigger picker "Create new label", confirm dialog,
+   *   then apply it in the same pass.
    */
-
-  // ── Track which labels we've already created this session ──────
-  const _createdLabels = new Set();
 
   async function applyGmailLabels(results, emails) {
     if (!results.length) return;
@@ -889,21 +871,14 @@ Return ONLY the reply text, nothing else. No quotes, no "Here is your reply:", j
       const name = cat.l;          // Simple label name — no "AI/" prefix needed
       const ids  = grouped[category].map(r => r.id);
 
-      lpTxt.textContent = `Creating label "${name}"…`;
+      lpTxt.textContent = `Preparing label "${name}"…`;
       lpBar.style.width  = Math.round((done / categories.length) * 100) + '%';
-      setStatus('Creating label: ' + name + '…');
+      setStatus('Preparing label: ' + name + '…');
 
       // Apply visual badges immediately (always works regardless of API)
       ids.forEach(id => applyBadge(id, name));
 
-      // ── Phase A: ensure the Gmail label exists ──
-      if (!_createdLabels.has(name)) {
-        await ensureLabelExists(name);
-        _createdLabels.add(name);
-        await sleep(400);
-      }
-
-      // ── Phase B: apply label to emails in batches of 5 ──
+      // Apply in batches of 5
       lpTxt.textContent = `Labeling "${name}" (${ids.length} emails)…`;
       setStatus('Applying label: ' + name + '…');
       const BATCH = 5;
@@ -928,98 +903,11 @@ Return ONLY the reply text, nothing else. No quotes, no "Here is your reply:", j
     }
 
     lpBar.style.width = '100%';
-    lpTxt.textContent = '✓ Done! ' + categories.length + ' labels created and applied.';
+    lpTxt.textContent = '✓ Done! ' + categories.length + ' labels applied.';
     labelBtn.disabled = false;
     labelBtn.textContent = '↻ Re-apply Labels';
-    setStatus('✓ ' + categories.length + ' Gmail labels created and applied');
+    setStatus('✓ ' + categories.length + ' Gmail labels applied');
     showToast('✓ All labels applied!', 3500);
-  }
-
-  // ── Phase A: Create label via Gmail Settings page ─────────────
-  // This is the most reliable method — no picker tricks, just a plain
-  // HTML form with a text input and a submit button.
-  async function ensureLabelExists(labelName) {
-    return new Promise(resolve => {
-      // Open Gmail Settings → Labels in a hidden iframe
-      const iframe = document.createElement('iframe');
-      iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
-      iframe.src = 'https://mail.google.com/mail/u/0/#settings/labels';
-      document.body.appendChild(iframe);
-
-      const cleanup = () => { try { document.body.removeChild(iframe); } catch(_){} };
-
-      const timeout = setTimeout(() => { cleanup(); resolve(false); }, 15000);
-
-      iframe.addEventListener('load', async () => {
-        try {
-          const doc = iframe.contentDocument;
-          if (!doc) { clearTimeout(timeout); cleanup(); resolve(false); return; }
-
-          // Wait for settings page to fully render
-          await sleep(2000);
-
-          // Find "Create new label" button/link in the settings page
-          const createBtns = [...doc.querySelectorAll('span, a, button, div')]
-            .filter(el => {
-              const t = (el.textContent || '').trim();
-              return /create new label|créer un libellé|crear etiqueta/i.test(t)
-                  && t.length < 60
-                  && el.offsetParent !== null;
-            });
-
-          if (createBtns.length === 0) {
-            clearTimeout(timeout); cleanup(); resolve(false); return;
-          }
-
-          createBtns[0].click();
-          await sleep(1200);
-
-          // Find the label name input in the dialog that opened
-          // Gmail's "Create label" dialog has input[name="lname"] or input.aoT
-          const dlgInput = [...doc.querySelectorAll('input[type="text"], input:not([type])')].find(el => {
-            const r = el.getBoundingClientRect();
-            return r.width > 50 && r.height > 10 && el.offsetParent !== null;
-          });
-
-          if (!dlgInput) {
-            clearTimeout(timeout); cleanup(); resolve(false); return;
-          }
-
-          // Fill the dialog input — it IS a regular HTML input, so direct .value works
-          dlgInput.focus();
-          await sleep(100);
-          dlgInput.select();
-          dlgInput.value = '';
-          dlgInput.value = labelName;
-          dlgInput.dispatchEvent(new Event('input',  { bubbles: true }));
-          dlgInput.dispatchEvent(new Event('change', { bubbles: true }));
-          await sleep(300);
-
-          // Click the OK / Create button
-          const okBtn = [...doc.querySelectorAll('button, [role="button"], .J-at1-auR')]
-            .find(b => {
-              if (!b.offsetParent) return false;
-              const t = (b.textContent || b.getAttribute('name') || '').trim().toLowerCase();
-              return t === 'ok' || t === 'create' || b.getAttribute('name') === 'ok';
-            });
-
-          if (okBtn) {
-            okBtn.click();
-            await sleep(1500); // Wait for Gmail to save the new label
-            clearTimeout(timeout); cleanup(); resolve(true);
-          } else {
-            // Enter key fallback
-            dlgInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-            await sleep(1000);
-            clearTimeout(timeout); cleanup(); resolve(true);
-          }
-        } catch(e) {
-          clearTimeout(timeout); cleanup(); resolve(false);
-        }
-      });
-
-      iframe.addEventListener('error', () => { clearTimeout(timeout); cleanup(); resolve(false); });
-    });
   }
 
   // ── Phase B: Select emails → toolbar → pick existing label ────
@@ -1058,31 +946,18 @@ Return ONLY the reply text, nothing else. No quotes, no "Here is your reply:", j
     await fillReactInput(input, labelName);
     await sleep(1200); // Wait for Gmail's live filter
 
-    // ── Step 5: Click the matching label entry ──
-    // The label was pre-created, so it WILL appear after filtering.
-    const shortName = labelName.split('/').pop().toLowerCase();
-    const allItems  = [...document.querySelectorAll('.J-JN-M-I')].filter(el => el.offsetParent !== null);
-    const match = allItems.find(item => {
-      const t = (item.textContent || '').trim().toLowerCase();
-      return t === labelName.toLowerCase() || t === shortName;
-    }) || allItems.find(item => {
-      const t = (item.textContent || '').trim().toLowerCase();
-      return t.includes(shortName);
-    });
-
-    if (match) {
-      match.click();
-      await sleep(400);
-      // Confirm assignment by clicking a safe area (NOT Escape — that cancels it)
-      closeSafely();
-      await sleep(500);
-    } else {
-      // Label not found in picker — close without applying
+    // ── Step 5: Click existing label, or create it directly in picker ──
+    const assigned = await chooseOrCreateLabelInPicker(labelName);
+    if (!assigned) {
       closeSafely();
       await sleep(400);
       await cleanDeselect();
       return false;
     }
+
+    await sleep(300);
+    closeSafely();
+    await sleep(450);
 
     await sleep(300);
     await cleanDeselect();
@@ -1237,6 +1112,68 @@ Return ONLY the reply text, nothing else. No quotes, no "Here is your reply:", j
       await sleep(100);
     }
     return null;
+  }
+
+
+  async function chooseOrCreateLabelInPicker(labelName) {
+    const norm = v => (v || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const target = norm(labelName);
+
+    const getVisibleItems = () => [...document.querySelectorAll('.J-JN-M-I, [role="menuitemcheckbox"], [role="menuitem"]')]
+      .filter(el => el.offsetParent !== null);
+
+    const findExistingItem = () => {
+      const items = getVisibleItems();
+      return items.find(item => {
+        const nameEl = item.querySelector('[role="menuitemcheckbox"], .J-N, .bAq, .aHl') || item;
+        const t = norm(nameEl.textContent || item.textContent);
+        return t === target || t.endsWith('/' + target) || t.includes(target);
+      });
+    };
+
+    let existing = await waitForVisibleFn(findExistingItem, 1800);
+    if (existing) { existing.click(); return true; }
+
+    const items = getVisibleItems();
+    const createItem = [...items].reverse().find(item => {
+      const t = norm(item.textContent);
+      return t.includes('create') || t.includes('new label') || t.includes('nouveau')
+        || t.includes('crear') || t.includes('criar') || t.includes('neu') || t.includes('新しい');
+    }) || items[items.length - 1];
+
+    if (!createItem) return false;
+    createItem.click();
+    await sleep(600);
+
+    const dlgInput = await waitForVisible([
+      'input[name="labelName"]', 'input[name="name"]', 'input[name="lname"]',
+      '.Kj-JD-Jz input[type="text"]', '.J-M input[type="text"]', 'input[type="text"]'
+    ], 2500);
+    if (!dlgInput) return false;
+
+    await fillReactInput(dlgInput, labelName);
+    await sleep(250);
+
+    const createBtn = [...document.querySelectorAll('[name="ok"], button, [role="button"]')]
+      .find(btn => {
+        if (!btn.offsetParent) return false;
+        const t = norm(btn.textContent || btn.getAttribute('aria-label') || btn.getAttribute('name'));
+        return btn.getAttribute('name') === 'ok' || t === 'ok' || t.includes('create') || t.includes('créer')
+          || t.includes('crear') || t.includes('criar') || t.includes('erstellen');
+      });
+
+    if (createBtn) {
+      createBtn.click();
+    } else {
+      dlgInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+    }
+
+    await sleep(1100);
+
+    existing = await waitForVisibleFn(findExistingItem, 2200);
+    if (!existing) return false;
+    existing.click();
+    return true;
   }
 
   function findRow(id) {
