@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Mail Organizer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Nunito',sans-serif;width:300px;background:#fff;overflow:hidden}
+
+    .header{background:linear-gradient(135deg,#7c3aed 0%,#a855f7 55%,#ec4899 100%);padding:18px 20px 16px;position:relative;overflow:hidden}
+    .header::before{content:'';position:absolute;top:-20px;right:-10px;width:80px;height:80px;background:rgba(255,255,255,.1);border-radius:50%}
+    .h-brand{display:flex;align-items:center;gap:10px;position:relative;z-index:1}
+    .h-ico{width:38px;height:38px;background:rgba(255,255,255,.2);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px}
+    .h-title{font-size:16px;font-weight:900;color:#fff;letter-spacing:-.3px}
+    .h-sub{font-size:10px;color:rgba(255,255,255,.75);font-weight:700;margin-top:1px}
+    .h-status{margin-top:12px;display:flex;align-items:center;gap:7px;position:relative;z-index:1}
+    .s-dot{width:7px;height:7px;border-radius:50%;background:#4ade80;flex-shrink:0}
+    .s-dot.off{background:#f87171}
+    .s-txt{font-size:11px;color:rgba(255,255,255,.9);font-weight:700}
+
+    .body{padding:16px}
+
+    /* ── Gmail Auth banner ── */
+    #auth-banner{border-radius:12px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;gap:10px;transition:all .2s}
+    #auth-banner.unauthorized{background:#fff7ed;border:2px solid #fed7aa}
+    #auth-banner.authorized{background:#f0fdf4;border:2px solid #a7f3d0}
+    #auth-banner.checking{background:#f5f3ff;border:2px solid #ddd6fe}
+    .auth-ico{font-size:20px;flex-shrink:0}
+    .auth-info{flex:1;min-width:0}
+    .auth-lbl{font-size:12px;font-weight:900;color:#1e1b4b}
+    .auth-sub{font-size:10px;font-weight:600;color:#64748b;margin-top:1px}
+    #btn-auth{flex-shrink:0;background:linear-gradient(135deg,#f97316,#ea580c);border:none;color:#fff;padding:7px 12px;border-radius:9px;cursor:pointer;font-size:11px;font-weight:800;transition:all .18s;white-space:nowrap}
+    #btn-auth:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 4px 12px rgba(234,88,12,.35)}
+    #btn-auth:disabled{opacity:.55;cursor:default;transform:none!important}
+    #btn-auth.done{background:linear-gradient(135deg,#059669,#10b981)}
+
+    .actions{display:flex;flex-direction:column;gap:8px;margin-bottom:16px}
+    .act-btn{display:flex;align-items:center;gap:11px;padding:12px 15px;border:2px solid #ede9fe;border-radius:12px;cursor:pointer;background:#fff;transition:all .18s;text-align:left}
+    .act-btn:hover:not(:disabled){border-color:#7c3aed;background:#f9f7ff;transform:translateX(3px)}
+    .act-btn:disabled{opacity:.5;cursor:default;transform:none!important}
+    .act-ico{font-size:18px;flex-shrink:0}
+    .act-lbl{font-size:13px;font-weight:800;color:#1e1b4b}
+    .act-dsc{font-size:10px;color:#8b5cf6;font-weight:600;margin-top:1px}
+
+    .section-lbl{font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.8px;color:#a78bfa;margin-bottom:8px}
+    .model-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;margin-bottom:16px}
+    .model-card{background:#f9f7ff;border:2px solid #ede9fe;border-radius:10px;padding:10px 6px;cursor:pointer;text-align:center;transition:all .18s}
+    .model-card:hover{border-color:#a78bfa}
+    .model-card.active{background:#7c3aed;border-color:#7c3aed}
+    .mc-ico{font-size:16px;display:block;margin-bottom:3px}
+    .mc-lbl{font-size:11px;font-weight:800;color:#7c3aed}
+    .model-card.active .mc-lbl{color:#fff}
+    .mc-dsc{font-size:9px;color:#a78bfa;font-weight:600}
+    .model-card.active .mc-dsc{color:rgba(255,255,255,.75)}
+
+    .footer{padding:10px 16px 14px;border-top:2px solid #f0edff;text-align:center;font-size:10px;color:#c4b5fd;font-weight:700}
+    #toast{position:fixed;bottom:10px;left:50%;transform:translateX(-50%) translateY(20px);background:#1e1b4b;color:#fff;padding:7px 16px;border-radius:20px;font-size:11px;font-weight:800;opacity:0;transition:all .25s;pointer-events:none;white-space:nowrap}
+    #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="h-brand">
+      <div class="h-ico">✉️</div>
+      <div>
+        <div class="h-title">Mail Organizer</div>
+        <div class="h-sub">Free AI · Gmail API Labels</div>
+      </div>
+    </div>
+    <div class="h-status">
+      <div class="s-dot" id="sdot"></div>
+      <span class="s-txt" id="stxt">Checking Gmail…</span>
+    </div>
+  </div>
+
+  <div class="body">
+
+    <!-- ── Gmail authorization banner ── -->
+    <div id="auth-banner" class="checking">
+      <span class="auth-ico" id="auth-ico">⏳</span>
+      <div class="auth-info">
+        <div class="auth-lbl" id="auth-lbl">Checking Gmail access…</div>
+        <div class="auth-sub" id="auth-sub">One-time setup required for labeling</div>
+      </div>
+      <button id="btn-auth" disabled>Checking…</button>
+    </div>
+
+    <div class="actions">
+      <button class="act-btn" id="btn-open">
+        <span class="act-ico">📋</span>
+        <div>
+          <div class="act-lbl">Open Sidebar</div>
+          <div class="act-dsc">Toggle the organizer panel</div>
+        </div>
+      </button>
+      <button class="act-btn" id="btn-analyze">
+        <span class="act-ico">✨</span>
+        <div>
+          <div class="act-lbl">Analyze Current Email</div>
+          <div class="act-dsc">Get AI summary + category + action</div>
+        </div>
+      </button>
+      <button class="act-btn" id="btn-bulk">
+        <span class="act-ico">📬</span>
+        <div>
+          <div class="act-lbl">Bulk Organize Inbox</div>
+          <div class="act-dsc">Sort 20 emails into groups</div>
+        </div>
+      </button>
+    </div>
+
+    <div class="section-lbl">Analysis Mode</div>
+    <div class="model-grid">
+      <div class="model-card active" id="m-quick" data-model="quick">
+        <span class="mc-ico">⚡</span>
+        <div class="mc-lbl">Quick</div>
+        <div class="mc-dsc">Fast scan</div>
+      </div>
+      <div class="model-card" id="m-balanced" data-model="balanced">
+        <span class="mc-ico">⚖️</span>
+        <div class="mc-lbl">Balanced</div>
+        <div class="mc-dsc">Smart</div>
+      </div>
+      <div class="model-card" id="m-deep" data-model="deep">
+        <span class="mc-ico">🔍</span>
+        <div class="mc-lbl">Deep</div>
+        <div class="mc-dsc">Detailed</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">Powered by Pollinations.ai · Gmail API Labels</div>
+  <div id="toast"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
