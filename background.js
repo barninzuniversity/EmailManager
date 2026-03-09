@@ -1,4 +1,7 @@
-// background.js — service worker, Pollinations.ai free API
+// background.js — service worker, Pollinations.ai + Gmail API (OAuth2)
+
+const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
+let _labelsCache = null;
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'AIMO_INJECT') {
@@ -17,7 +20,128 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(e  => sendResponse({ ok: false, error: String(e) }));
     return true;
   }
+
+  if (message.type === 'AIMO_GMAIL') {
+    handleGmailRequest(message.op, message.payload || {})
+      .then(data => sendResponse({ ok: true, data }))
+      .catch(e => sendResponse({ ok: false, error: String(e) }));
+    return true;
+  }
 });
+
+async function handleGmailRequest(op, payload) {
+  if (op === 'ensureLabel') {
+    const labelName = String(payload.labelName || '').trim();
+    if (!labelName) throw new Error('Missing label name');
+    const labelId = await ensureGmailLabel(labelName);
+    return { labelId };
+  }
+
+  if (op === 'applyLabelToThreads') {
+    const labelId = String(payload.labelId || '').trim();
+    const threadIds = Array.isArray(payload.threadIds) ? payload.threadIds.map(String).filter(Boolean) : [];
+    if (!labelId) throw new Error('Missing label ID');
+    if (!threadIds.length) return { applied: 0, failed: 0 };
+    const result = await applyLabelToThreads(labelId, threadIds);
+    return result;
+  }
+
+  if (op === 'clearAuthCache') {
+    const token = await getAuthToken(true);
+    await removeCachedToken(token);
+    return { ok: true };
+  }
+
+  throw new Error(`Unknown Gmail op: ${op}`);
+}
+
+async function ensureGmailLabel(name) {
+  const labels = await listLabels();
+  const existing = labels.find(l => (l.name || '').toLowerCase() === name.toLowerCase());
+  if (existing) return existing.id;
+
+  const created = await gmailFetch('https://gmail.googleapis.com/gmail/v1/users/me/labels', {
+    method: 'POST',
+    body: JSON.stringify({
+      name,
+      messageListVisibility: 'show',
+      labelListVisibility: 'labelShow'
+    })
+  });
+
+  _labelsCache = null;
+  if (!created?.id) throw new Error('Gmail API did not return label ID');
+  return created.id;
+}
+
+async function applyLabelToThreads(labelId, threadIds) {
+  const uniq = [...new Set(threadIds)];
+  let applied = 0;
+  let failed = 0;
+
+  for (const threadId of uniq) {
+    try {
+      await gmailFetch(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}/modify`, {
+        method: 'POST',
+        body: JSON.stringify({ addLabelIds: [labelId] })
+      });
+      applied++;
+    } catch (_) {
+      failed++;
+    }
+    await sleep(30);
+  }
+
+  return { applied, failed };
+}
+
+async function listLabels() {
+  if (_labelsCache) return _labelsCache;
+  const data = await gmailFetch('https://gmail.googleapis.com/gmail/v1/users/me/labels');
+  _labelsCache = data?.labels || [];
+  return _labelsCache;
+}
+
+async function gmailFetch(url, init = {}, retry = true) {
+  const token = await getAuthToken(true);
+  const res = await fetch(url, {
+    ...init,
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      ...(init.headers || {})
+    }
+  });
+
+  if (res.status === 401 && retry) {
+    await removeCachedToken(token);
+    return gmailFetch(url, init, false);
+  }
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Gmail API ${res.status}: ${body.slice(0, 180)}`);
+  }
+
+  if (res.status === 204) return {};
+  return res.json().catch(() => ({}));
+}
+
+function getAuthToken(interactive) {
+  return new Promise((resolve, reject) => {
+    chrome.identity.getAuthToken({ interactive, scopes: [GMAIL_SCOPE] }, token => {
+      if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+      if (!token) return reject(new Error('No OAuth token received'));
+      resolve(token);
+    });
+  });
+}
+
+function removeCachedToken(token) {
+  return new Promise(resolve => {
+    chrome.identity.removeCachedAuthToken({ token }, () => resolve());
+  });
+}
 
 async function callWithRetry(prompt, detail, attempts = 4) {
   let lastErr;
@@ -25,7 +149,6 @@ async function callWithRetry(prompt, detail, attempts = 4) {
     try {
       const text = await callAI(prompt, detail);
       if (!text || text.trim().length < 2) {
-        // Empty response — wait and retry
         await sleep(1500 * (i + 1));
         lastErr = new Error('Empty response — Pollinations returned nothing, retrying…');
         continue;

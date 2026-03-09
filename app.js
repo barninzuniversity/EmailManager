@@ -736,8 +736,13 @@ Return ONLY the reply text, nothing else. No quotes, no "Here is your reply:", j
       seen.add(id);
       const subject = subEl ? subEl.innerText.trim() : '';
       if (!subject) return; // skip blank rows
+
+      const m = String(rawId).match(/([a-f0-9]{12,})$/i);
+      const apiThreadId = m ? m[1].toLowerCase() : null;
+
       out.push({
         id,
+        apiThreadId,
         subject,
         from: fromEl ? fromEl.innerText.trim() : '',
         body: snipEl ? snipEl.innerText.trim() : '',
@@ -857,58 +862,68 @@ Return ONLY the reply text, nothing else. No quotes, no "Here is your reply:", j
     lpBar.style.width = '0%';
     lpTxt.textContent = 'Starting…';
 
+    const emailById = new Map((emails || []).map(e => [e.id, e]));
     const grouped = {};
     results.forEach(r => {
       const k = r.category || 'other';
       if (!grouped[k]) grouped[k] = [];
       grouped[k].push(r);
     });
+
     const categories = Object.keys(grouped);
     let done = 0;
 
     for (const category of categories) {
       const cat  = CATS[category] || createCat(category);
-      const name = cat.l;          // Simple label name — no "AI/" prefix needed
+      const labelName = cat.l;
       const ids  = grouped[category].map(r => r.id);
 
-      lpTxt.textContent = `Preparing label "${name}"…`;
+      lpTxt.textContent = `Ensuring API label "${labelName}"…`;
       lpBar.style.width  = Math.round((done / categories.length) * 100) + '%';
-      setStatus('Preparing label: ' + name + '…');
+      setStatus('Gmail API: preparing label ' + labelName + '…');
+      ids.forEach(id => applyBadge(id, labelName));
 
-      // Apply visual badges immediately (always works regardless of API)
-      ids.forEach(id => applyBadge(id, name));
+      const threadIds = ids
+        .map(id => emailById.get(id)?.apiThreadId)
+        .filter(Boolean);
 
-      // Apply in batches of 5
-      lpTxt.textContent = `Labeling "${name}" (${ids.length} emails)…`;
-      setStatus('Applying label: ' + name + '…');
-      const BATCH = 5;
-      for (let i = 0; i < ids.length; i += BATCH) {
-        await resetGmailUI();
-        const ok = await applyLabelBatch(name, ids.slice(i, i + BATCH));
-        if (!ok) {
-          // If batch fails, try each email individually
-          for (const id of ids.slice(i, i + BATCH)) {
-            await resetGmailUI();
-            await applyLabelBatch(name, [id]);
-            await sleep(300);
-          }
-        }
-        await sleep(500);
+      if (!threadIds.length) {
+        throw new Error(`No Gmail thread IDs found for "${labelName}". Open inbox list view and retry.`);
+      }
+
+      let labelId;
+      try {
+        const ensured = await gmailRequest('ensureLabel', { labelName });
+        labelId = ensured?.labelId;
+      } catch (e) {
+        throw new Error('Gmail API label creation failed: ' + String(e.message || e));
+      }
+
+      if (!labelId) throw new Error('Gmail API returned no label ID for ' + labelName);
+
+      lpTxt.textContent = `Applying API label "${labelName}" (${threadIds.length})…`;
+      setStatus('Gmail API: applying ' + labelName + '…');
+
+      const apiResult = await gmailRequest('applyLabelToThreads', { labelId, threadIds });
+      const failed = Number(apiResult?.failed || 0);
+      if (failed > 0) {
+        throw new Error(`Gmail API could not label ${failed} thread(s) in ${labelName}`);
       }
 
       done++;
       lpBar.style.width = Math.round((done / categories.length) * 100) + '%';
-      showToast('✓ ' + name + ' → ' + ids.length + ' emails', 2000);
-      await sleep(400);
+      showToast('✓ ' + labelName + ' → ' + threadIds.length + ' emails', 1800);
+      await sleep(180);
     }
 
     lpBar.style.width = '100%';
-    lpTxt.textContent = '✓ Done! ' + categories.length + ' labels applied.';
+    lpTxt.textContent = '✓ Done! ' + categories.length + ' labels applied via Gmail API.';
     labelBtn.disabled = false;
     labelBtn.textContent = '↻ Re-apply Labels';
-    setStatus('✓ ' + categories.length + ' Gmail labels applied');
-    showToast('✓ All labels applied!', 3500);
+    setStatus('✓ Gmail API labeling completed');
+    showToast('✓ All labels applied via Gmail API!', 3200);
   }
+
 
   // ── Phase B: Select emails → toolbar → pick existing label ────
   async function applyLabelBatch(labelName, threadIds) {
@@ -1242,19 +1257,37 @@ Return ONLY the reply text, nothing else. No quotes, no "Here is your reply:", j
     if (cb) { delete _pending[e.data.id]; cb(e.data); }
   });
 
-  function aiRequest(prompt, detail = 'normal') {
+  function bridgeRequest(payload, timeoutMs, timeoutMsg) {
     return new Promise((resolve, reject) => {
       const id = ++_cid;
       const t = setTimeout(() => {
         delete _pending[id];
-        reject(new Error('Timed out — Pollinations may be busy, please retry'));
-      }, 90000);
+        reject(new Error(timeoutMsg || 'Request timed out'));
+      }, timeoutMs || 90000);
       _pending[id] = res => {
         clearTimeout(t);
-        res.ok ? resolve(res.text) : reject(new Error(res.error || 'Unknown error'));
+        res.ok ? resolve(res) : reject(new Error(res.error || 'Unknown error'));
       };
-      window.postMessage({ ns:'AIMO', type:'REQ', prompt, detail, id }, '*');
+      window.postMessage({ ns:'AIMO', type:'REQ', id, ...payload }, '*');
     });
+  }
+
+  async function aiRequest(prompt, detail = 'normal') {
+    const res = await bridgeRequest(
+      { prompt, detail },
+      90000,
+      'Timed out — Pollinations may be busy, please retry'
+    );
+    return res.text;
+  }
+
+  async function gmailRequest(op, payload = {}) {
+    const res = await bridgeRequest(
+      { req: 'gmail', op, payload },
+      120000,
+      'Timed out — Gmail API is taking too long, please retry'
+    );
+    return res.data;
   }
 
   function parseJSON(raw, expectArray) {

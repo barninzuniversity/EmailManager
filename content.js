@@ -7,22 +7,24 @@
   // Inject app.js into MAIN world via background (bypasses Gmail page CSP)
   chrome.runtime.sendMessage({ type: 'AIMO_INJECT' }, () => { void chrome.runtime.lastError; });
 
-  // Relay AI requests: app.js window.postMessage → chrome.runtime → background
+  // Relay app.js requests: window.postMessage → chrome.runtime → background
   window.addEventListener('message', event => {
     if (event.source !== window) return;
     const d = event.data;
     if (!d || d.ns !== 'AIMO' || d.type !== 'REQ') return;
 
-    chrome.runtime.sendMessage(
-      { type: 'AIMO_CALL', prompt: d.prompt, detail: d.detail, id: d.id },
-      response => {
-        void chrome.runtime.lastError;
-        window.postMessage({
-          ns: 'AIMO', type: 'RES', id: d.id,
-          ...(response || { ok: false, error: 'No response from background' })
-        }, '*');
-      }
-    );
+    const isGmailReq = d.req === 'gmail';
+    const msg = isGmailReq
+      ? { type: 'AIMO_GMAIL', op: d.op, payload: d.payload, id: d.id }
+      : { type: 'AIMO_CALL', prompt: d.prompt, detail: d.detail, id: d.id };
+
+    chrome.runtime.sendMessage(msg, response => {
+      void chrome.runtime.lastError;
+      window.postMessage({
+        ns: 'AIMO', type: 'RES', id: d.id,
+        ...(response || { ok: false, error: 'No response from background' })
+      }, '*');
+    });
   });
 
   // Relay popup commands → app.js custom DOM events

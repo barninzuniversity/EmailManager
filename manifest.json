@@ -5,13 +5,15 @@
   "description": "AI email organizer: categorize, summarize and group your Gmail with free AI. No API key needed.",
   "permissions": [
     "activeTab",
+    "identity",
     "scripting",
     "storage",
     "tabs"
   ],
   "host_permissions": [
     "https://mail.google.com/*",
-    "https://text.pollinations.ai/*"
+    "https://text.pollinations.ai/*",
+    "https://www.googleapis.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -53,5 +55,11 @@
     "32": "icon32.png",
     "48": "icon48.png",
     "128": "icon128.png"
+  },
+  "oauth2": {
+    "client_id": "1008566193158-2rhudhgjjk3io778l86bmqr165addih8.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/gmail.modify"
+    ]
   }
 }
