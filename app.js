@@ -862,7 +862,6 @@ Return ONLY the reply text, nothing else. No quotes, no "Here is your reply:", j
     lpBar.style.width = '0%';
     lpTxt.textContent = 'Starting…';
 
-    const emailById = new Map((emails || []).map(e => [e.id, e]));
     const grouped = {};
     results.forEach(r => {
       const k = r.category || 'other';
@@ -873,62 +872,45 @@ Return ONLY the reply text, nothing else. No quotes, no "Here is your reply:", j
     const categories = Object.keys(grouped);
     let done = 0;
 
-    try {
-      setStatus('Gmail API: requesting OAuth permission…');
-      await gmailRequest('pingAuth', {});
-    } catch (e) {
-      throw new Error('Gmail OAuth failed. In Google Cloud, open your Chrome Extension OAuth client and ensure this exact extension ID is allowed, then reload extension and retry. Details: ' + (e.message || e));
-    }
-
     for (const category of categories) {
       const cat  = CATS[category] || createCat(category);
       const labelName = cat.l;
       const ids  = grouped[category].map(r => r.id);
 
-      lpTxt.textContent = `Ensuring API label "${labelName}"…`;
+      lpTxt.textContent = `Preparing label "${labelName}"…`;
       lpBar.style.width  = Math.round((done / categories.length) * 100) + '%';
-      setStatus('Gmail API: preparing label ' + labelName + '…');
+      setStatus('Preparing label: ' + labelName + '…');
       ids.forEach(id => applyBadge(id, labelName));
 
-      const threadIds = ids
-        .map(id => emailById.get(id)?.apiThreadId)
-        .filter(Boolean);
+      lpTxt.textContent = `Labeling "${labelName}" (${ids.length} emails)…`;
+      setStatus('Applying label: ' + labelName + '…');
 
-      if (!threadIds.length) {
-        throw new Error(`No Gmail thread IDs found for "${labelName}". Open inbox list view and retry.`);
-      }
-
-      let labelId;
-      try {
-        const ensured = await gmailRequest('ensureLabel', { labelName });
-        labelId = ensured?.labelId;
-      } catch (e) {
-        throw new Error('Gmail API label creation failed: ' + String(e.message || e));
-      }
-
-      if (!labelId) throw new Error('Gmail API returned no label ID for ' + labelName);
-
-      lpTxt.textContent = `Applying API label "${labelName}" (${threadIds.length})…`;
-      setStatus('Gmail API: applying ' + labelName + '…');
-
-      const apiResult = await gmailRequest('applyLabelToThreads', { labelId, threadIds });
-      const failed = Number(apiResult?.failed || 0);
-      if (failed > 0) {
-        throw new Error(`Gmail API could not label ${failed} thread(s) in ${labelName}`);
+      const BATCH = 5;
+      for (let i = 0; i < ids.length; i += BATCH) {
+        await resetGmailUI();
+        const ok = await applyLabelBatch(labelName, ids.slice(i, i + BATCH));
+        if (!ok) {
+          for (const id of ids.slice(i, i + BATCH)) {
+            await resetGmailUI();
+            await applyLabelBatch(labelName, [id]);
+            await sleep(260);
+          }
+        }
+        await sleep(420);
       }
 
       done++;
       lpBar.style.width = Math.round((done / categories.length) * 100) + '%';
-      showToast('✓ ' + labelName + ' → ' + threadIds.length + ' emails', 1800);
+      showToast('✓ ' + labelName + ' → ' + ids.length + ' emails', 1800);
       await sleep(180);
     }
 
     lpBar.style.width = '100%';
-    lpTxt.textContent = '✓ Done! ' + categories.length + ' labels applied via Gmail API.';
+    lpTxt.textContent = '✓ Done! ' + categories.length + ' labels applied.';
     labelBtn.disabled = false;
     labelBtn.textContent = '↻ Re-apply Labels';
-    setStatus('✓ Gmail API labeling completed');
-    showToast('✓ All labels applied via Gmail API!', 3200);
+    setStatus('✓ ' + categories.length + ' Gmail labels applied');
+    showToast('✓ All labels applied!', 3200);
   }
 
 
