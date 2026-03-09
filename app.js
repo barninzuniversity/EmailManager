@@ -873,6 +873,13 @@ Return ONLY the reply text, nothing else. No quotes, no "Here is your reply:", j
     const categories = Object.keys(grouped);
     let done = 0;
 
+    try {
+      setStatus('Gmail API: requesting OAuth permission…');
+      await gmailRequest('pingAuth', {});
+    } catch (e) {
+      throw new Error('Gmail OAuth failed. In Google Cloud, open your Chrome Extension OAuth client and ensure this exact extension ID is allowed, then reload extension and retry. Details: ' + (e.message || e));
+    }
+
     for (const category of categories) {
       const cat  = CATS[category] || createCat(category);
       const labelName = cat.l;
@@ -1282,12 +1289,20 @@ Return ONLY the reply text, nothing else. No quotes, no "Here is your reply:", j
   }
 
   async function gmailRequest(op, payload = {}) {
-    const res = await bridgeRequest(
-      { req: 'gmail', op, payload },
-      120000,
-      'Timed out — Gmail API is taking too long, please retry'
-    );
-    return res.data;
+    try {
+      const res = await bridgeRequest(
+        { req: 'gmail', op, payload },
+        45000,
+        'Gmail API timed out. Usually this means OAuth is misconfigured or the permission popup is blocked.'
+      );
+      return res.data;
+    } catch (e) {
+      const msg = String(e && e.message || e || '');
+      if (/oauth|token|identity|401|unauthorized|forbidden/i.test(msg)) {
+        try { await bridgeRequest({ req: 'gmail', op: 'clearAuthCache', payload: {} }, 12000, 'Could not reset OAuth token cache'); } catch (_) {}
+      }
+      throw e;
+    }
   }
 
   function parseJSON(raw, expectArray) {

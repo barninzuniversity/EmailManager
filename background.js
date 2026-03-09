@@ -52,6 +52,11 @@ async function handleGmailRequest(op, payload) {
     return { ok: true };
   }
 
+  if (op === 'pingAuth') {
+    const token = await getAuthToken(true);
+    return { ok: true, tokenPreview: token ? token.slice(0, 12) : '' };
+  }
+
   throw new Error(`Unknown Gmail op: ${op}`);
 }
 
