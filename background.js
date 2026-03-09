@@ -2,6 +2,8 @@
 
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
 let _labelsCache = null;
+let _authBlockedUntil = 0;
+let _lastAuthError = '';
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'AIMO_INJECT') {
@@ -47,8 +49,8 @@ async function handleGmailRequest(op, payload) {
   }
 
   if (op === 'clearAuthCache') {
-    const token = await getAuthToken(true);
-    await removeCachedToken(token);
+    const token = await getAuthToken(false).catch(() => null);
+    if (token) await removeCachedToken(token);
     return { ok: true };
   }
 
@@ -108,7 +110,7 @@ async function listLabels() {
 }
 
 async function gmailFetch(url, init = {}, retry = true) {
-  const token = await getAuthToken(true);
+  const token = await getAuthToken(false);
   const res = await fetch(url, {
     ...init,
     headers: {
@@ -120,6 +122,7 @@ async function gmailFetch(url, init = {}, retry = true) {
 
   if (res.status === 401 && retry) {
     await removeCachedToken(token);
+    await getAuthToken(true); // one interactive recovery attempt
     return gmailFetch(url, init, false);
   }
 
@@ -134,9 +137,21 @@ async function gmailFetch(url, init = {}, retry = true) {
 
 function getAuthToken(interactive) {
   return new Promise((resolve, reject) => {
+    if (interactive && Date.now() < _authBlockedUntil) {
+      return reject(new Error(_lastAuthError || 'OAuth temporarily blocked. Please wait a minute and retry.'));
+    }
+
     chrome.identity.getAuthToken({ interactive, scopes: [GMAIL_SCOPE] }, token => {
-      if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+      if (chrome.runtime.lastError) {
+        const msg = String(chrome.runtime.lastError.message || 'OAuth failed');
+        if (interactive && /invalid_request|deleted_client|not allowed|disallowed|popup|closed/i.test(msg)) {
+          _authBlockedUntil = Date.now() + 60_000;
+          _lastAuthError = msg;
+        }
+        return reject(new Error(msg));
+      }
       if (!token) return reject(new Error('No OAuth token received'));
+      _lastAuthError = '';
       resolve(token);
     });
   });
